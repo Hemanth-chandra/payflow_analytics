@@ -1,6 +1,6 @@
 # PayFlow Analytics
 
-A banking analytics project built on SQL Server and Power BI. It takes 1.26 million rows of synthetic banking data from raw CSV files to a four-page dashboard, with a data-quality gate in between that decides whether the data is fit to report on.
+A banking analytics project built on SQL Server (with a MySQL 8 version of every script) and Power BI. It takes 1.26 million rows of synthetic banking data from raw CSV files to a four-page dashboard, with a data-quality gate in between that decides whether the data is fit to report on.
 
 The data-quality layer is the core of the project. The first load matched only 11% of transactions to an account and none to a merchant. The cause was traced to a mixed file version, the correct file was reloaded, and the build now stops automatically if the same thing happens again.
 
@@ -207,7 +207,7 @@ Every number on the dashboard and in this README comes from one of these queries
 
 ## Dashboard
 
-The Power BI report ([powerbi/PayFlow_Analytics.pbix](powerbi/PayFlow_Analytics.pbix)) has four pages. The first three each end with four findings and the action that follows from each; the fourth ends with a table of issues, impact and actions.
+The Power BI report ([pay analytics.pbix](pay%20analytics.pbix)) has four pages. The first three each end with four findings and the action that follows from each; the fourth ends with a table of issues, impact and actions.
 
 | Page | Shows |
 |---|---|
@@ -218,12 +218,17 @@ The Power BI report ([powerbi/PayFlow_Analytics.pbix](powerbi/PayFlow_Analytics.
 
 The model, calculated columns and measures are documented in [powerbi/dax_measures.md](powerbi/dax_measures.md).
 
-<!-- Add screenshots after refreshing the report, then remove this comment wrapper.
-![Executive Overview](docs/screenshots/01_executive_overview.png)
-![Customer and Account Insights](docs/screenshots/02_customer_account.png)
-![Transaction and Merchant Performance](docs/screenshots/03_transactions.png)
-![Data Quality and Business Risk](docs/screenshots/04_data_quality.png)
--->
+### Executive Overview
+![Executive Overview](docs/screenshots/page%20%201.png)
+
+### Customer and Account Insights
+![Customer and Account Insights](docs/screenshots/page%20%202.png)
+
+### Transaction and Merchant Performance
+![Transaction and Merchant Performance](docs/screenshots/page%20%203.png)
+
+### Data Quality and Business Risk
+![Data Quality and Business Risk](docs/screenshots/page%20%204.png)
 
 ## How to run
 
@@ -240,13 +245,29 @@ Requirements: SQL Server 2017 or later, SQL Server Management Studio, Power BI D
 | `04_build_analytics_layer.sql` | Publishes the analytics tables and the customer summary view. Stops if a Critical check failed |
 | `05_business_analysis.sql` | The business queries |
 
-3. Open `powerbi/PayFlow_Analytics.pbix` in Power BI Desktop. If your server is not `localhost`, change it under Transform data > Data source settings. Then click Refresh.
+3. Open `pay analytics.pbix` in Power BI Desktop. If your server is not `localhost`, change it under Transform data > Data source settings. Then click Refresh.
+
+### Running on MySQL instead
+
+The same five scripts, rewritten for MySQL 8.0.16 or later, are in `sql/mysql/`. They produce identical results: every check and every business query returns the same numbers as the SQL Server version.
+
+| Difference | SQL Server (`sql/`) | MySQL (`sql/mysql/`) |
+|---|---|---|
+| Databases | One database, `PayFlowAnalytics`, with `staging` and `analytics` schemas | Two databases, `payflow_staging` and `payflow_analytics` |
+| Loading | `BULK INSERT`, path set once in `@DataPath` | `LOAD DATA LOCAL INFILE`; replace `C:/PayFlow/data/` throughout `02_load_staging.sql` |
+| Stopping on failed checks | `THROW` in script 04 | Script 04 creates and calls the stored procedure `build_analytics_layer`, which raises an error with `SIGNAL` |
+| Row limits | `TOP (n)` | `LIMIT n` |
+
+Before running `02_load_staging.sql` on MySQL, allow local file loading: run `SET GLOBAL local_infile = 1;` once, and in MySQL Workbench add `OPT_LOCAL_INFILE=1` under your connection's Advanced > Others, then reconnect.
+
+The Power BI report connects to SQL Server. To point it at MySQL instead, install MySQL Connector/NET and change each table's source in Power Query to the `payflow_analytics` database.
 
 ## Repository structure
 
 ```text
 payflow-analytics/
 ├── README.md
+├── pay analytics.pbix           the Power BI report
 ├── data/
 │   ├── customers.csv
 │   ├── accounts.csv
@@ -254,14 +275,14 @@ payflow-analytics/
 │   ├── loans.csv
 │   ├── merchants.csv
 │   └── transactions/            one file per year, 2019 to 2025
-├── sql/
+├── sql/                         SQL Server (T-SQL), used by the dashboard
 │   ├── 01_create_schema.sql
 │   ├── 02_load_staging.sql
 │   ├── 03_data_quality_checks.sql
 │   ├── 04_build_analytics_layer.sql
-│   └── 05_business_analysis.sql
+│   ├── 05_business_analysis.sql
+│   └── mysql/                   the same five scripts for MySQL 8
 ├── powerbi/
-│   ├── PayFlow_Analytics.pbix
 │   └── dax_measures.md
 └── docs/
     ├── data_dictionary.md
@@ -273,4 +294,6 @@ payflow-analytics/
 
 Synthetic banking dataset. No real customer, account or payment data is used.
 
-Source: https://www.kaggle.com/datasets/akrambelha/synthetic-banking-dataset-csv-sql-sqlite
+Source: [Synthetic Banking Dataset (CSV, SQL, SQLite)](https://www.kaggle.com/datasets/akrambelha/synthetic-banking-dataset-csv-sql-sqlite) by akrambelha on Kaggle.
+
+The download contains two generations of the data. This project uses the CSV master tables with the transactions from the SQL insert script, which is the combination where every key matches (see [docs/data_quality_report.md](docs/data_quality_report.md)).
