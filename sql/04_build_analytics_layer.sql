@@ -1,9 +1,9 @@
 /* =====================================================================
-   PayFlow Analytics
+   PayFlow Analytics (MySQL 8 version)
    04_build_analytics_layer.sql
 
-   Publishes staging data to the analytics tables that Power BI reads,
-   and adds the derived reporting columns:
+   Publishes staging data to the analytics tables and adds the derived
+   reporting columns:
 
      accounts.first_name / last_name / city   copied from customers
      accounts.account_date_valid              1 = opened on/after customer created
@@ -17,141 +17,155 @@
    "expired" means expired at the end of the reporting period, not
    relative to the day the script happens to be run.
 
-   Run the first batch as a whole. Safe to re-run.
+   MySQL can only stop a script with an error from inside a stored
+   procedure, so the build is a procedure: it refuses to run while any
+   Critical data-quality check has status FAIL.
+
+   Run the whole script. Safe to re-run.
    ===================================================================== */
 
-USE PayFlowAnalytics;
-GO
+DROP PROCEDURE IF EXISTS payflow_analytics.build_analytics_layer;
 
-SET NOCOUNT ON;
+DELIMITER $$
 
-/* --- gate: do not publish data that failed a Critical check ----------- */
-IF NOT EXISTS (SELECT 1 FROM analytics.data_quality_results)
+CREATE PROCEDURE payflow_analytics.build_analytics_layer()
 BEGIN
-    THROW 50001, 'No data-quality results found. Run 03_data_quality_checks.sql first.', 1;
-END;
+    DECLARE as_of_date DATE;
 
-IF EXISTS (SELECT 1 FROM analytics.data_quality_results WHERE status = 'FAIL')
-BEGIN
-    THROW 50002, 'Critical data-quality checks failed. Review analytics.data_quality_results and fix the source files first.', 1;
-END;
+    /* --- gate: do not publish data that failed a Critical check ------- */
+    IF (SELECT COUNT(*) FROM payflow_analytics.data_quality_results) = 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'No data-quality results found. Run 03_data_quality_checks.sql first.';
+    END IF;
 
-DECLARE @AsOfDate DATE = (SELECT CAST(MAX(transaction_date) AS DATE) FROM staging.transactions);
+    IF EXISTS (SELECT 1 FROM payflow_analytics.data_quality_results WHERE status = 'FAIL') THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Critical data-quality checks failed. Review payflow_analytics.data_quality_results and fix the source files first.';
+    END IF;
 
-/* --- empty the reporting tables, children first ----------------------- */
-TRUNCATE TABLE analytics.transactions;
-TRUNCATE TABLE analytics.cards;
-TRUNCATE TABLE analytics.loans;
-DELETE FROM analytics.accounts;
-DELETE FROM analytics.merchants;
-DELETE FROM analytics.customers;
+    SELECT CAST(MAX(transaction_date) AS DATE) INTO as_of_date
+    FROM payflow_staging.transactions;
 
-/* --- parents ---------------------------------------------------------- */
-INSERT INTO analytics.customers
-    (customer_id, first_name, last_name, email, city, credit_score, created_at)
-SELECT customer_id, first_name, last_name, email, city, credit_score, created_at
-FROM staging.customers;
+    /* --- empty the reporting tables ----------------------------------- */
+    /* TRUNCATE is refused on tables that foreign keys point at, so the
+       checks are paused while emptying and switched back on before any
+       data goes in. */
+    SET FOREIGN_KEY_CHECKS = 0;
+    TRUNCATE TABLE payflow_analytics.transactions;
+    TRUNCATE TABLE payflow_analytics.cards;
+    TRUNCATE TABLE payflow_analytics.loans;
+    TRUNCATE TABLE payflow_analytics.accounts;
+    TRUNCATE TABLE payflow_analytics.merchants;
+    TRUNCATE TABLE payflow_analytics.customers;
+    SET FOREIGN_KEY_CHECKS = 1;
 
-INSERT INTO analytics.merchants
-    (merchant_id, merchant_name, city)
-SELECT merchant_id, merchant_name, city
-FROM staging.merchants;
+    /* --- parents ------------------------------------------------------ */
+    INSERT INTO payflow_analytics.customers
+        (customer_id, first_name, last_name, email, city, credit_score, created_at)
+    SELECT customer_id, first_name, last_name, email, city, credit_score, created_at
+    FROM payflow_staging.customers;
 
-/* --- accounts --------------------------------------------------------- */
-INSERT INTO analytics.accounts
-    (account_id, customer_id, first_name, last_name, city,
-     account_type, balance_usd, open_date, account_date_valid)
-SELECT
-    a.account_id,
-    a.customer_id,
-    c.first_name,
-    c.last_name,
-    c.city,
-    a.account_type,
-    a.balance_usd,
-    a.open_date,
-    CASE WHEN a.open_date >= c.created_at THEN 1 ELSE 0 END
-FROM staging.accounts AS a
-JOIN staging.customers AS c
-  ON c.customer_id = a.customer_id;
+    INSERT INTO payflow_analytics.merchants
+        (merchant_id, merchant_name, city)
+    SELECT merchant_id, merchant_name, city
+    FROM payflow_staging.merchants;
 
-/* --- loans ------------------------------------------------------------ */
-INSERT INTO analytics.loans
-    (loan_id, customer_id, first_name, last_name, city, credit_score,
-     loan_amount, interest_rate, start_date, loan_date_valid)
-SELECT
-    l.loan_id,
-    l.customer_id,
-    c.first_name,
-    c.last_name,
-    c.city,
-    c.credit_score,
-    l.loan_amount,
-    l.interest_rate,
-    l.start_date,
-    CASE WHEN l.start_date >= c.created_at THEN 1 ELSE 0 END
-FROM staging.loans AS l
-JOIN staging.customers AS c
-  ON c.customer_id = l.customer_id;
+    /* --- accounts ----------------------------------------------------- */
+    INSERT INTO payflow_analytics.accounts
+        (account_id, customer_id, first_name, last_name, city,
+         account_type, balance_usd, open_date, account_date_valid)
+    SELECT
+        a.account_id,
+        a.customer_id,
+        c.first_name,
+        c.last_name,
+        c.city,
+        a.account_type,
+        a.balance_usd,
+        a.open_date,
+        CASE WHEN a.open_date >= c.created_at THEN 1 ELSE 0 END
+    FROM payflow_staging.accounts AS a
+    JOIN payflow_staging.customers AS c
+      ON c.customer_id = a.customer_id;
 
-/* --- cards ------------------------------------------------------------ */
-INSERT INTO analytics.cards
-    (card_id, account_id, card_type, expiration_date, card_status)
-SELECT
-    k.card_id,
-    k.account_id,
-    k.card_type,
-    k.expiration_date,
-    CASE WHEN k.expiration_date <= @AsOfDate THEN 'Expired' ELSE 'Active' END
-FROM staging.cards AS k;
+    /* --- loans -------------------------------------------------------- */
+    INSERT INTO payflow_analytics.loans
+        (loan_id, customer_id, first_name, last_name, city, credit_score,
+         loan_amount, interest_rate, start_date, loan_date_valid)
+    SELECT
+        l.loan_id,
+        l.customer_id,
+        c.first_name,
+        c.last_name,
+        c.city,
+        c.credit_score,
+        l.loan_amount,
+        l.interest_rate,
+        l.start_date,
+        CASE WHEN l.start_date >= c.created_at THEN 1 ELSE 0 END
+    FROM payflow_staging.loans AS l
+    JOIN payflow_staging.customers AS c
+      ON c.customer_id = l.customer_id;
 
-/* --- transactions ----------------------------------------------------- */
-INSERT INTO analytics.transactions
-    (transaction_id, account_id, merchant_id, amount_usd, transaction_date,
-     account_match_status, merchant_match_status)
-SELECT
-    t.transaction_id,
-    t.account_id,
-    t.merchant_id,
-    t.amount_usd,
-    t.transaction_date,
-    CASE WHEN a.account_id  IS NULL THEN 'Unmatched' ELSE 'Matched' END,
-    CASE WHEN m.merchant_id IS NULL THEN 'Unmatched' ELSE 'Matched' END
-FROM staging.transactions AS t
-LEFT JOIN staging.accounts  AS a ON a.account_id  = t.account_id
-LEFT JOIN staging.merchants AS m ON m.merchant_id = t.merchant_id;
+    /* --- cards -------------------------------------------------------- */
+    INSERT INTO payflow_analytics.cards
+        (card_id, account_id, card_type, expiration_date, card_status)
+    SELECT
+        k.card_id,
+        k.account_id,
+        k.card_type,
+        k.expiration_date,
+        CASE WHEN k.expiration_date <= as_of_date THEN 'Expired' ELSE 'Active' END
+    FROM payflow_staging.cards AS k;
 
-/* --- what was published ----------------------------------------------- */
-SELECT @AsOfDate AS reporting_date;
+    /* --- transactions ------------------------------------------------- */
+    INSERT INTO payflow_analytics.transactions
+        (transaction_id, account_id, merchant_id, amount_usd, transaction_date,
+         account_match_status, merchant_match_status)
+    SELECT
+        t.transaction_id,
+        t.account_id,
+        t.merchant_id,
+        t.amount_usd,
+        t.transaction_date,
+        CASE WHEN a.account_id  IS NULL THEN 'Unmatched' ELSE 'Matched' END,
+        CASE WHEN m.merchant_id IS NULL THEN 'Unmatched' ELSE 'Matched' END
+    FROM payflow_staging.transactions AS t
+    LEFT JOIN payflow_staging.accounts  AS a ON a.account_id  = t.account_id
+    LEFT JOIN payflow_staging.merchants AS m ON m.merchant_id = t.merchant_id;
 
-SELECT 'customers' AS table_name, COUNT(*) AS rows_published FROM analytics.customers
-UNION ALL SELECT 'accounts',     COUNT(*) FROM analytics.accounts
-UNION ALL SELECT 'cards',        COUNT(*) FROM analytics.cards
-UNION ALL SELECT 'loans',        COUNT(*) FROM analytics.loans
-UNION ALL SELECT 'merchants',    COUNT(*) FROM analytics.merchants
-UNION ALL SELECT 'transactions', COUNT(*) FROM analytics.transactions;
+    /* --- what was published ------------------------------------------- */
+    SELECT as_of_date AS reporting_date;
 
-SELECT account_match_status, merchant_match_status, COUNT(*) AS transactions
-FROM analytics.transactions
-GROUP BY account_match_status, merchant_match_status;
+    SELECT 'customers' AS table_name, COUNT(*) AS rows_published FROM payflow_analytics.customers
+    UNION ALL SELECT 'accounts',     COUNT(*) FROM payflow_analytics.accounts
+    UNION ALL SELECT 'cards',        COUNT(*) FROM payflow_analytics.cards
+    UNION ALL SELECT 'loans',        COUNT(*) FROM payflow_analytics.loans
+    UNION ALL SELECT 'merchants',    COUNT(*) FROM payflow_analytics.merchants
+    UNION ALL SELECT 'transactions', COUNT(*) FROM payflow_analytics.transactions;
 
-SELECT card_status, COUNT(*) AS cards
-FROM analytics.cards
-GROUP BY card_status;
-GO
+    SELECT account_match_status, merchant_match_status, COUNT(*) AS transactions
+    FROM payflow_analytics.transactions
+    GROUP BY account_match_status, merchant_match_status;
+
+    SELECT card_status, COUNT(*) AS cards
+    FROM payflow_analytics.cards
+    GROUP BY card_status;
+END$$
+
+DELIMITER ;
 
 /* =====================================================================
-   analytics.vw_customer_summary
+   payflow_analytics.vw_customer_summary
    One row per customer with everything they hold and do. Each fact is
    aggregated on its own first, so joining them cannot multiply rows.
    ===================================================================== */
-CREATE OR ALTER VIEW analytics.vw_customer_summary
-AS
+CREATE OR REPLACE VIEW payflow_analytics.vw_customer_summary AS
 WITH account_summary AS (
     SELECT customer_id,
            COUNT(*)         AS account_count,
            SUM(balance_usd) AS total_balance
-    FROM analytics.accounts
+    FROM payflow_analytics.accounts
     GROUP BY customer_id
 ),
 loan_summary AS (
@@ -159,14 +173,14 @@ loan_summary AS (
            COUNT(*)           AS loan_count,
            SUM(loan_amount)   AS total_loan_amount,
            AVG(interest_rate) AS avg_interest_rate
-    FROM analytics.loans
+    FROM payflow_analytics.loans
     GROUP BY customer_id
 ),
 card_summary AS (
     SELECT a.customer_id,
            COUNT(*) AS card_count
-    FROM analytics.cards AS k
-    JOIN analytics.accounts AS a
+    FROM payflow_analytics.cards AS k
+    JOIN payflow_analytics.accounts AS a
       ON a.account_id = k.account_id
     GROUP BY a.customer_id
 ),
@@ -174,8 +188,8 @@ transaction_summary AS (
     SELECT a.customer_id,
            COUNT(*)          AS transaction_count,
            SUM(t.amount_usd) AS total_spent
-    FROM analytics.transactions AS t
-    JOIN analytics.accounts AS a
+    FROM payflow_analytics.transactions AS t
+    JOIN payflow_analytics.accounts AS a
       ON a.account_id = t.account_id
     GROUP BY a.customer_id
 )
@@ -206,9 +220,13 @@ SELECT
     COALESCE(k.card_count, 0)            AS card_count,
     COALESCE(t.transaction_count, 0)     AS transaction_count,
     COALESCE(t.total_spent, 0)           AS total_spent
-FROM analytics.customers AS c
+FROM payflow_analytics.customers AS c
 LEFT JOIN account_summary     AS a ON a.customer_id = c.customer_id
 LEFT JOIN loan_summary        AS l ON l.customer_id = c.customer_id
 LEFT JOIN card_summary        AS k ON k.customer_id = c.customer_id
 LEFT JOIN transaction_summary AS t ON t.customer_id = c.customer_id;
-GO
+
+/* =====================================================================
+   Build
+   ===================================================================== */
+CALL payflow_analytics.build_analytics_layer();

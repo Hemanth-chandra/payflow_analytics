@@ -1,5 +1,5 @@
 /* =====================================================================
-   PayFlow Analytics
+   PayFlow Analytics (MySQL 8 version)
    05_business_analysis.sql
 
    Business questions answered from the analytics layer.
@@ -19,46 +19,43 @@
      (the same bands are used in the Power BI model)
    ===================================================================== */
 
-USE PayFlowAnalytics;
-GO
-
 /* =====================================================================
    SECTION 1: PORTFOLIO KPIs
    ===================================================================== */
 
 -- Q1. Headline numbers for the executive page.
 SELECT
-    (SELECT COUNT(*)                                   FROM analytics.customers)    AS total_customers,
-    (SELECT COUNT(*)                                   FROM analytics.accounts)     AS total_accounts,
-    (SELECT SUM(balance_usd)                           FROM analytics.accounts)     AS total_balance_usd,
-    (SELECT CAST(AVG(balance_usd) AS DECIMAL(12, 2))   FROM analytics.accounts)     AS avg_account_balance_usd,
-    (SELECT COUNT(*)                                   FROM analytics.loans)        AS total_loans,
-    (SELECT SUM(loan_amount)                           FROM analytics.loans)        AS total_loan_exposure_usd,
-    (SELECT COUNT(*)                                   FROM analytics.cards)        AS total_cards,
-    (SELECT COUNT(*) FROM analytics.cards WHERE card_status = 'Expired')            AS expired_cards,
-    (SELECT COUNT(*)                                   FROM analytics.transactions) AS total_transactions,
-    (SELECT SUM(amount_usd)                            FROM analytics.transactions) AS total_transaction_value_usd,
-    (SELECT CAST(AVG(amount_usd) AS DECIMAL(12, 2))    FROM analytics.transactions) AS avg_transaction_usd;
+    (SELECT COUNT(*)                                   FROM payflow_analytics.customers)    AS total_customers,
+    (SELECT COUNT(*)                                   FROM payflow_analytics.accounts)     AS total_accounts,
+    (SELECT SUM(balance_usd)                           FROM payflow_analytics.accounts)     AS total_balance_usd,
+    (SELECT CAST(AVG(balance_usd) AS DECIMAL(12, 2))   FROM payflow_analytics.accounts)     AS avg_account_balance_usd,
+    (SELECT COUNT(*)                                   FROM payflow_analytics.loans)        AS total_loans,
+    (SELECT SUM(loan_amount)                           FROM payflow_analytics.loans)        AS total_loan_exposure_usd,
+    (SELECT COUNT(*)                                   FROM payflow_analytics.cards)        AS total_cards,
+    (SELECT COUNT(*) FROM payflow_analytics.cards WHERE card_status = 'Expired')            AS expired_cards,
+    (SELECT COUNT(*)                                   FROM payflow_analytics.transactions) AS total_transactions,
+    (SELECT SUM(amount_usd)                            FROM payflow_analytics.transactions) AS total_transaction_value_usd,
+    (SELECT CAST(AVG(amount_usd) AS DECIMAL(12, 2))    FROM payflow_analytics.transactions) AS avg_transaction_usd;
 
 /* =====================================================================
    SECTION 2: CUSTOMERS
    ===================================================================== */
 
 -- Q2. Credit score summary.
---     credit_score is an INT, so it is cast first: AVG of an INT column
---     returns an INT in SQL Server and would silently drop the decimals.
+--     The cast keeps two decimals. (SQL Server would round AVG of an INT
+--     column to a whole number; MySQL does not, but the cast is harmless.)
 SELECT
     MIN(credit_score)                                              AS min_credit_score,
     MAX(credit_score)                                              AS max_credit_score,
     CAST(AVG(CAST(credit_score AS DECIMAL(10, 2))) AS DECIMAL(10, 2)) AS avg_credit_score
-FROM analytics.customers;
+FROM payflow_analytics.customers;
 
 -- Q3. How are customers spread across credit categories?
 SELECT
     credit_category,
     COUNT(*)                                                       AS customers,
     CAST(100.0 * COUNT(*) / SUM(COUNT(*)) OVER () AS DECIMAL(5, 2)) AS pct_of_customers
-FROM analytics.vw_customer_summary
+FROM payflow_analytics.vw_customer_summary
 GROUP BY credit_category, credit_category_sort
 ORDER BY credit_category_sort;
 
@@ -66,7 +63,7 @@ ORDER BY credit_category_sort;
 WITH yearly AS (
     SELECT YEAR(created_at) AS acquisition_year,
            COUNT(*)         AS new_customers
-    FROM analytics.customers
+    FROM payflow_analytics.customers
     GROUP BY YEAR(created_at)
 )
 SELECT
@@ -82,7 +79,7 @@ ORDER BY acquisition_year;
 --     customers does a typical city have?
 WITH city_counts AS (
     SELECT city, COUNT(*) AS customers
-    FROM analytics.customers
+    FROM payflow_analytics.customers
     GROUP BY city
 )
 SELECT
@@ -103,7 +100,7 @@ SELECT
     SUM(balance_usd)                                                          AS total_balance_usd,
     CAST(AVG(balance_usd) AS DECIMAL(12, 2))                                  AS avg_balance_usd,
     CAST(100.0 * SUM(balance_usd) / SUM(SUM(balance_usd)) OVER () AS DECIMAL(5, 2)) AS pct_of_balance
-FROM analytics.accounts
+FROM payflow_analytics.accounts
 GROUP BY account_type
 ORDER BY total_balance_usd DESC;
 
@@ -114,7 +111,7 @@ SELECT
     account_count,
     COUNT(*)                                                       AS customers,
     CAST(100.0 * COUNT(*) / SUM(COUNT(*)) OVER () AS DECIMAL(5, 2)) AS pct_of_customers
-FROM analytics.vw_customer_summary
+FROM payflow_analytics.vw_customer_summary
 GROUP BY account_count
 ORDER BY account_count;
 
@@ -123,7 +120,7 @@ WITH ranked AS (
     SELECT
         customer_id, first_name, last_name, account_count, total_balance,
         RANK() OVER (ORDER BY total_balance DESC) AS balance_rank
-    FROM analytics.vw_customer_summary
+    FROM payflow_analytics.vw_customer_summary
 )
 SELECT balance_rank, customer_id, first_name, last_name, account_count, total_balance
 FROM ranked
@@ -138,7 +135,7 @@ WITH by_type AS (
         SUM(balance_usd) AS total_balance,
         ROW_NUMBER() OVER (PARTITION BY account_type
                            ORDER BY SUM(balance_usd) DESC, customer_id) AS row_num
-    FROM analytics.accounts
+    FROM payflow_analytics.accounts
     GROUP BY account_type, customer_id
 )
 SELECT account_type, row_num AS rank_in_type, customer_id, total_balance
@@ -153,7 +150,7 @@ WITH holders AS (
         customer_id,
         total_balance,
         NTILE(10) OVER (ORDER BY total_balance DESC, customer_id) AS balance_decile
-    FROM analytics.vw_customer_summary
+    FROM payflow_analytics.vw_customer_summary
     WHERE account_count > 0
 )
 SELECT
@@ -176,7 +173,7 @@ SELECT
     SUM(CASE WHEN card_status = 'Expired' THEN 1 ELSE 0 END)                    AS expired_cards,
     CAST(100.0 * SUM(CASE WHEN card_status = 'Expired' THEN 1 ELSE 0 END)
          / COUNT(*) AS DECIMAL(5, 2))                                           AS pct_expired
-FROM analytics.cards
+FROM payflow_analytics.cards
 GROUP BY card_type
 ORDER BY card_type;
 
@@ -184,7 +181,7 @@ ORDER BY card_type;
 WITH by_year AS (
     SELECT YEAR(expiration_date) AS expiry_year,
            COUNT(*)              AS cards_expiring
-    FROM analytics.cards
+    FROM payflow_analytics.cards
     GROUP BY YEAR(expiration_date)
 )
 SELECT
@@ -201,8 +198,8 @@ SELECT
     SUM(CASE WHEN k.account_id IS NULL THEN 1 ELSE 0 END)            AS accounts_without_card,
     CAST(100.0 * SUM(CASE WHEN k.account_id IS NULL THEN 1 ELSE 0 END)
          / COUNT(*) AS DECIMAL(5, 2))                                AS pct_without_card
-FROM analytics.accounts AS a
-LEFT JOIN (SELECT DISTINCT account_id FROM analytics.cards) AS k
+FROM payflow_analytics.accounts AS a
+LEFT JOIN (SELECT DISTINCT account_id FROM payflow_analytics.cards) AS k
        ON k.account_id = a.account_id;
 
 /* =====================================================================
@@ -218,7 +215,7 @@ SELECT
     MIN(loan_amount)                             AS min_loan_usd,
     MAX(loan_amount)                             AS max_loan_usd,
     CAST(AVG(interest_rate) AS DECIMAL(5, 2))    AS avg_interest_rate
-FROM analytics.loans;
+FROM payflow_analytics.loans;
 
 -- Q15. Loans by size band.
 WITH banded AS (
@@ -230,7 +227,7 @@ WITH banded AS (
         CASE WHEN loan_amount <= 100000 THEN 1
              WHEN loan_amount <= 200000 THEN 2
              ELSE 3 END       AS loan_size_sort
-    FROM analytics.loans
+    FROM payflow_analytics.loans
 )
 SELECT
     loan_size,
@@ -246,7 +243,7 @@ WITH yearly AS (
     SELECT YEAR(start_date) AS loan_year,
            COUNT(*)         AS loans,
            SUM(loan_amount) AS loan_amount_usd
-    FROM analytics.loans
+    FROM payflow_analytics.loans
     GROUP BY YEAR(start_date)
 )
 SELECT
@@ -266,8 +263,8 @@ SELECT
     CAST(AVG(l.loan_amount) AS DECIMAL(12, 2))   AS avg_loan_usd,
     CAST(AVG(l.interest_rate) AS DECIMAL(5, 2))  AS avg_interest_rate,
     SUM(l.loan_amount)                           AS total_loan_usd
-FROM analytics.loans AS l
-JOIN analytics.vw_customer_summary AS s
+FROM payflow_analytics.loans AS l
+JOIN payflow_analytics.vw_customer_summary AS s
   ON s.customer_id = l.customer_id
 GROUP BY s.credit_category, s.credit_category_sort
 ORDER BY s.credit_category_sort;
@@ -278,8 +275,8 @@ SELECT
     COUNT(*)                        AS loans,
     SUM(l.loan_amount)              AS exposure_usd,
     CAST(100.0 * SUM(l.loan_amount)
-         / (SELECT SUM(loan_amount) FROM analytics.loans) AS DECIMAL(5, 2)) AS pct_of_loan_book
-FROM analytics.loans AS l
+         / (SELECT SUM(loan_amount) FROM payflow_analytics.loans) AS DECIMAL(5, 2)) AS pct_of_loan_book
+FROM payflow_analytics.loans AS l
 WHERE l.credit_score < 580
   AND l.loan_amount > 200000;
 
@@ -296,14 +293,14 @@ SELECT
     MAX(amount_usd)                            AS max_transaction_usd,
     COUNT(DISTINCT account_id)                 AS active_accounts,
     COUNT(DISTINCT merchant_id)                AS active_merchants
-FROM analytics.transactions;
+FROM payflow_analytics.transactions;
 
 -- Q20. Volume and value per year, with the change on the previous year.
 WITH yearly AS (
     SELECT YEAR(transaction_date) AS transaction_year,
            COUNT(*)               AS transactions,
            SUM(amount_usd)        AS value_usd
-    FROM analytics.transactions
+    FROM payflow_analytics.transactions
     GROUP BY YEAR(transaction_date)
 )
 SELECT
@@ -320,11 +317,11 @@ ORDER BY transaction_year;
 -- Q21. Monthly value with a 3-month moving average.
 WITH monthly AS (
     SELECT
-        DATEFROMPARTS(YEAR(transaction_date), MONTH(transaction_date), 1) AS month_start,
+        CAST(DATE_FORMAT(transaction_date, '%Y-%m-01') AS DATE) AS month_start,
         COUNT(*)        AS transactions,
         SUM(amount_usd) AS value_usd
-    FROM analytics.transactions
-    GROUP BY DATEFROMPARTS(YEAR(transaction_date), MONTH(transaction_date), 1)
+    FROM payflow_analytics.transactions
+    GROUP BY CAST(DATE_FORMAT(transaction_date, '%Y-%m-01') AS DATE)
 )
 SELECT
     month_start,
@@ -341,7 +338,7 @@ WITH merchant_totals AS (
         t.merchant_id,
         COUNT(*)          AS transactions,
         SUM(t.amount_usd) AS value_usd
-    FROM analytics.transactions AS t
+    FROM payflow_analytics.transactions AS t
     GROUP BY t.merchant_id
 ),
 ranked AS (
@@ -360,7 +357,7 @@ SELECT
     r.value_usd,
     CAST(100.0 * r.value_usd / r.all_value_usd AS DECIMAL(6, 3)) AS pct_of_value
 FROM ranked AS r
-JOIN analytics.merchants AS m
+JOIN payflow_analytics.merchants AS m
   ON m.merchant_id = r.merchant_id
 WHERE r.value_rank <= 10
 ORDER BY r.value_rank, r.merchant_id;
@@ -370,7 +367,7 @@ ORDER BY r.value_rank, r.merchant_id;
 --      merchant were the same size.
 WITH merchant_totals AS (
     SELECT merchant_id, SUM(amount_usd) AS value_usd
-    FROM analytics.transactions
+    FROM payflow_analytics.transactions
     GROUP BY merchant_id
 ),
 ranked AS (
@@ -393,7 +390,7 @@ WITH banded AS (
              WHEN amount_usd < 5000 THEN '2. 2,500 to 4,999'
              WHEN amount_usd < 7500 THEN '3. 5,000 to 7,499'
              ELSE '4. 7,500 and over' END AS amount_band
-    FROM analytics.transactions
+    FROM payflow_analytics.transactions
 )
 SELECT
     amount_band,
@@ -409,7 +406,7 @@ WITH account_totals AS (
     SELECT account_id,
            COUNT(*)        AS transactions,
            SUM(amount_usd) AS value_usd
-    FROM analytics.transactions
+    FROM payflow_analytics.transactions
     GROUP BY account_id
 ),
 ranked AS (
@@ -421,7 +418,7 @@ SELECT
     r.value_rank, r.account_id, a.account_type, a.customer_id,
     a.first_name, a.last_name, r.transactions, r.value_usd
 FROM ranked AS r
-JOIN analytics.accounts AS a
+JOIN payflow_analytics.accounts AS a
   ON a.account_id = r.account_id
 WHERE r.value_rank <= 10
 ORDER BY r.value_rank, r.account_id;
@@ -439,7 +436,7 @@ WITH holdings AS (
             WHEN loan_count > 0                       THEN '3. Loan only'
             ELSE '4. No product'
         END AS product_holding
-    FROM analytics.vw_customer_summary
+    FROM payflow_analytics.vw_customer_summary
 )
 SELECT
     product_holding,
@@ -455,7 +452,7 @@ WITH ranked AS (
         customer_id, first_name, last_name, credit_category,
         account_count, transaction_count, total_spent,
         RANK() OVER (ORDER BY total_spent DESC) AS spend_rank
-    FROM analytics.vw_customer_summary
+    FROM payflow_analytics.vw_customer_summary
 )
 SELECT spend_rank, customer_id, first_name, last_name, credit_category,
        account_count, transaction_count, total_spent
@@ -471,7 +468,7 @@ SELECT
     CAST(AVG(total_loan_amount) AS DECIMAL(14, 2))                   AS avg_loans_per_customer,
     CAST(AVG(total_spent) AS DECIMAL(14, 2))                         AS avg_spend_per_customer,
     CAST(100.0 * SUM(total_spent) / SUM(SUM(total_spent)) OVER () AS DECIMAL(5, 2)) AS pct_of_spend
-FROM analytics.vw_customer_summary
+FROM payflow_analytics.vw_customer_summary
 GROUP BY credit_category, credit_category_sort
 ORDER BY credit_category_sort;
 
@@ -481,7 +478,7 @@ SELECT
     COUNT(*)                                             AS customers,
     CAST(AVG(CAST(transaction_count AS DECIMAL(12, 2))) AS DECIMAL(12, 2)) AS avg_transactions_per_customer,
     CAST(AVG(total_spent) AS DECIMAL(14, 2))             AS avg_spend_per_customer
-FROM analytics.vw_customer_summary
+FROM payflow_analytics.vw_customer_summary
 WHERE account_count > 0
 GROUP BY account_count
 ORDER BY account_count;
@@ -490,7 +487,7 @@ ORDER BY account_count;
 WITH holders AS (
     SELECT customer_id, total_balance,
            AVG(total_balance) OVER () AS avg_customer_balance
-    FROM analytics.vw_customer_summary
+    FROM payflow_analytics.vw_customer_summary
     WHERE account_count > 0
 )
 SELECT
@@ -510,8 +507,8 @@ FROM holders;
 WITH per_account AS (
     SELECT a.account_id,
            COUNT(t.transaction_id) AS transactions
-    FROM analytics.accounts AS a
-    LEFT JOIN analytics.transactions AS t
+    FROM payflow_analytics.accounts AS a
+    LEFT JOIN payflow_analytics.transactions AS t
            ON t.account_id = a.account_id
     GROUP BY a.account_id
 )
@@ -524,7 +521,7 @@ GROUP BY transactions
 ORDER BY transactions;
 
 -- Q32. The 10 largest individual transactions, with owner and merchant.
-SELECT TOP (10)
+SELECT
     t.transaction_id,
     t.transaction_date,
     t.amount_usd,
@@ -533,10 +530,11 @@ SELECT TOP (10)
     a.last_name,
     a.account_type,
     m.merchant_name
-FROM analytics.transactions AS t
-JOIN analytics.accounts  AS a ON a.account_id  = t.account_id
-JOIN analytics.merchants AS m ON m.merchant_id = t.merchant_id
-ORDER BY t.amount_usd DESC, t.transaction_id;
+FROM payflow_analytics.transactions AS t
+JOIN payflow_analytics.accounts  AS a ON a.account_id  = t.account_id
+JOIN payflow_analytics.merchants AS m ON m.merchant_id = t.merchant_id
+ORDER BY t.amount_usd DESC, t.transaction_id
+LIMIT 10;
 
 -- Q33. Customers with both balances and loans above $100,000:
 --      how many, and the 10 largest by combined size.
@@ -546,27 +544,28 @@ WITH both_high AS (
         total_balance, total_loan_amount,
         total_balance + total_loan_amount AS combined_usd,
         COUNT(*) OVER ()                  AS customers_meeting_both
-    FROM analytics.vw_customer_summary
+    FROM payflow_analytics.vw_customer_summary
     WHERE total_balance > 100000
       AND total_loan_amount > 100000
 ),
 ranked AS (
-    SELECT *,
-           ROW_NUMBER() OVER (ORDER BY combined_usd DESC, customer_id) AS position
+    SELECT customer_id, first_name, last_name, credit_category,
+           total_balance, total_loan_amount, combined_usd, customers_meeting_both,
+           ROW_NUMBER() OVER (ORDER BY combined_usd DESC, customer_id) AS top_position
     FROM both_high
 )
-SELECT position, customers_meeting_both, customer_id, first_name, last_name,
+SELECT top_position, customers_meeting_both, customer_id, first_name, last_name,
        credit_category, total_balance, total_loan_amount, combined_usd
 FROM ranked
-WHERE position <= 10
-ORDER BY position;
+WHERE top_position <= 10
+ORDER BY top_position;
 
 -- Q34. Accounts holding the most cards. RANK keeps ties, so more than
 --      10 rows can return when several accounts share a card count.
 WITH card_counts AS (
     SELECT k.account_id,
            COUNT(*) AS cards
-    FROM analytics.cards AS k
+    FROM payflow_analytics.cards AS k
     GROUP BY k.account_id
 ),
 ranked AS (
@@ -577,7 +576,7 @@ ranked AS (
 SELECT r.card_rank, r.account_id, a.account_type, a.customer_id,
        a.first_name, a.last_name, r.cards
 FROM ranked AS r
-JOIN analytics.accounts AS a
+JOIN payflow_analytics.accounts AS a
   ON a.account_id = r.account_id
 WHERE r.card_rank <= 10
 ORDER BY r.card_rank, r.account_id;
@@ -589,7 +588,7 @@ WITH shares AS (
         customer_id, first_name, last_name, total_spent,
         100.0 * total_spent / SUM(total_spent) OVER () AS pct_of_spend,
         ROW_NUMBER() OVER (ORDER BY total_spent DESC, customer_id) AS spend_position
-    FROM analytics.vw_customer_summary
+    FROM payflow_analytics.vw_customer_summary
 )
 SELECT
     spend_position,
@@ -604,4 +603,3 @@ SELECT
 FROM shares
 WHERE spend_position <= 10
 ORDER BY spend_position;
-GO
