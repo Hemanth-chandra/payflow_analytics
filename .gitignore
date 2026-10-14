@@ -1,0 +1,19 @@
+# Office and Power BI temporary files
+~$*
+~WRL*.tmp
+*.tmp
+*.bak
+
+# SQL Server database files and backups
+*.mdf
+*.ldf
+*.ndf
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor settings
+.vscode/
+.idea/
